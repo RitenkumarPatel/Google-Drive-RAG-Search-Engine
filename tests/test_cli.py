@@ -54,3 +54,62 @@ def test_config_reports_missing_key(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "MISSING" in result.output
+
+
+def test_list_requires_login(monkeypatch):
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("gdrive_rag.auth.load_credentials", lambda settings: None)
+
+    result = CliRunner().invoke(cli, ["list"])
+
+    assert result.exit_code != 0
+    assert "login" in result.output.lower()
+
+
+def test_list_prints_files(monkeypatch):
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("gdrive_rag.auth.load_credentials", lambda settings: object())
+    monkeypatch.setattr("gdrive_rag.drive.get_service", lambda creds: object())
+    monkeypatch.setattr(
+        "gdrive_rag.drive.list_files",
+        lambda service, limit: [
+            {
+                "id": "1",
+                "name": "CS 213 Notes",
+                "mimeType": "application/vnd.google-apps.document",
+                "modifiedTime": "2026-01-01T00:00:00Z",
+            }
+        ],
+    )
+
+    result = CliRunner().invoke(cli, ["list", "--limit", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "CS 213 Notes" in result.output
+
+
+def test_list_reports_network_error(monkeypatch):
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("gdrive_rag.auth.load_credentials", lambda settings: object())
+    monkeypatch.setattr("gdrive_rag.drive.get_service", lambda creds: object())
+
+    def _boom(service, limit):
+        raise RuntimeError("Tunnel connection failed")
+
+    monkeypatch.setattr("gdrive_rag.drive.list_files", _boom)
+
+    result = CliRunner().invoke(cli, ["list"])
+
+    assert result.exit_code != 0
+    assert "failed" in result.output.lower()
+
+
+def test_login_missing_credentials(monkeypatch, tmp_path):
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setenv("GDRIVE_RAG_CREDENTIALS", str(tmp_path / "nope.json"))
+    monkeypatch.setenv("GDRIVE_RAG_TOKEN", str(tmp_path / "token.json"))
+
+    result = CliRunner().invoke(cli, ["login"])
+
+    assert result.exit_code != 0
+    assert "not found" in result.output.lower()

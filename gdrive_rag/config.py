@@ -20,6 +20,8 @@ class Settings:
     embed_model: str
     embed_dims: int
     data_dir: Path
+    credentials_path: Path
+    token_path: Path
 
 
 def load_settings(*, require_api_key: bool = True, load_env: bool = True) -> Settings:
@@ -46,4 +48,8 @@ def load_settings(*, require_api_key: bool = True, load_env: bool = True) -> Set
         embed_model=os.environ.get("GEMINI_EMBED_MODEL", "gemini-embedding-001").strip(),
         embed_dims=int(os.environ.get("GEMINI_EMBED_DIMS", "768")),
         data_dir=Path(os.environ.get("GDRIVE_RAG_DATA_DIR", "./data")).expanduser(),
+        credentials_path=Path(
+            os.environ.get("GDRIVE_RAG_CREDENTIALS", "./credentials.json")
+        ).expanduser(),
+        token_path=Path(os.environ.get("GDRIVE_RAG_TOKEN", "./token.json")).expanduser(),
     )

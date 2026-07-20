@@ -52,6 +52,23 @@ def test_shrink_purges_orphans(tmp_path):
     s.close()
 
 
+def test_query_ranks_by_similarity(tmp_path):
+    s = store_mod.Store(_Settings(tmp_path))
+    ca = Chunk("f1", "Alpha", "text/markdown", "markdown", 0, "alpha body",
+               {"type": "heading", "value": "A"})
+    cb = Chunk("f2", "Beta", "text/markdown", "markdown", 0, "beta body",
+               {"type": "heading", "value": "B"})
+    s.replace_file(_meta(fid="f1", name="Alpha"), [ca], [[1.0, 0.0, 0.0]])
+    s.replace_file(_meta(fid="f2", name="Beta"), [cb], [[0.0, 1.0, 0.0]])
+
+    hits = s.query([1.0, 0.0, 0.0], k=2)
+
+    assert [h["metadata"]["name"] for h in hits] == ["Alpha", "Beta"]  # nearest first
+    assert hits[0]["score"] > hits[1]["score"]
+    assert hits[0]["score"] > 0.99  # near-identical vector → cosine ~1
+    s.close()
+
+
 def test_purge_and_reconcile(tmp_path):
     s = store_mod.Store(_Settings(tmp_path))
     s.replace_file(_meta(fid="A", name="A"), [_chunk(0)], [_vec()])

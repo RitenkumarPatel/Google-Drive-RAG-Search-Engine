@@ -71,6 +71,26 @@ class Store:
         files = self._db.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         return {"files": files, "chunks": self._collection.count()}
 
+    def query(self, embedding, k: int = 6) -> list[dict]:
+        """Return the ``k`` nearest chunks to ``embedding`` (cosine), best first.
+
+        Each result is ``{id, document, metadata, score}`` where ``score`` is cosine
+        similarity (``1 - distance``, since the collection uses the cosine space).
+        """
+        res = self._collection.query(
+            query_embeddings=[list(embedding)],
+            n_results=k,
+            include=["documents", "metadatas", "distances"],
+        )
+        ids = (res.get("ids") or [[]])[0]
+        docs = (res.get("documents") or [[]])[0]
+        metas = (res.get("metadatas") or [[]])[0]
+        dists = (res.get("distances") or [[]])[0]
+        return [
+            {"id": ids[i], "document": docs[i], "metadata": metas[i], "score": 1.0 - dists[i]}
+            for i in range(len(ids))
+        ]
+
     # --- writes ---
     def replace_file(self, meta: dict, chunks, embeddings) -> None:
         """Delete a file's existing chunks, then insert the new ones (idempotent)."""

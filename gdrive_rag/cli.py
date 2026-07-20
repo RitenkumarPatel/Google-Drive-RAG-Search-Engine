@@ -226,6 +226,53 @@ def stats() -> None:
     click.echo(f"data  : {settings.data_dir}")
 
 
+def _locator_suffix(locator: dict) -> str:
+    value = locator.get("value")
+    if not value:
+        return ""
+    return f" · p.{value}" if locator.get("type") == "page" else f" · {value}"
+
+
+def _snippet(text: str, width: int = 200) -> str:
+    body = text.split("\n\n", 1)[-1]  # drop the "Name — locator" prefix line
+    body = " ".join(body.split())
+    return body[:width] + ("…" if len(body) > width else "")
+
+
+@cli.command("search")
+@click.argument("query")
+@click.option("--k", default=6, show_default=True, help="Number of results to return.")
+def search_cmd(query: str, k: int) -> None:
+    """Semantic search over your indexed Drive (retrieval only — no LLM answer)."""
+    from .retrieve import search
+    from .store import Store
+
+    try:
+        settings = load_settings()  # API key required — the query is embedded
+    except ConfigError as e:
+        raise click.ClickException(str(e))
+
+    store = Store(settings)
+    try:
+        hits = search(settings, store, query, k=k)
+    except Exception as e:
+        raise click.ClickException(
+            f"Search failed: {e}\n"
+            "If you're behind an HTTP proxy, set https_proxy/http_proxy (e.g. in .env)."
+        )
+    finally:
+        store.close()
+
+    if not hits:
+        click.echo("(no results — is anything indexed? run `gdrive-rag index`)")
+        return
+    for rank, h in enumerate(hits, 1):
+        click.echo(f"{rank}. [{h.score:.3f}] {h.name}{_locator_suffix(h.locator)}")
+        if h.drive_url:
+            click.echo(f"   {h.drive_url}")
+        click.echo(f"   {_snippet(h.text)}\n")
+
+
 def main() -> None:  # pragma: no cover - thin wrapper
     cli()
 

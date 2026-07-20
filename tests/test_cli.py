@@ -192,6 +192,46 @@ def test_stats_empty(monkeypatch, tmp_path):
     assert "chunks: 0" in result.output
 
 
+def test_search_prints_hits(monkeypatch, tmp_path):
+    import pytest
+
+    pytest.importorskip("chromadb")
+    from gdrive_rag import retrieve
+
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    monkeypatch.setenv("GDRIVE_RAG_DATA_DIR", str(tmp_path))
+    hit = retrieve.SearchHit(
+        score=0.884,
+        name="CS 213",
+        locator={"type": "page", "value": "4"},
+        drive_url="https://drive/x",
+        text="CS 213 — p.4\n\nA process is a program in execution.",
+        chunk_index=0,
+    )
+    monkeypatch.setattr(
+        "gdrive_rag.retrieve.search", lambda settings, store, query, k=6, client=None: [hit]
+    )
+
+    result = CliRunner().invoke(cli, ["search", "what is a process"])
+
+    assert result.exit_code == 0, result.output
+    assert "CS 213" in result.output
+    assert "0.884" in result.output
+    assert "p.4" in result.output
+    assert "program in execution" in result.output
+
+
+def test_search_missing_key(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+
+    result = CliRunner().invoke(cli, ["search", "q"])
+
+    assert result.exit_code != 0
+    assert "GEMINI_API_KEY" in result.output
+
+
 def test_login_missing_credentials(monkeypatch, tmp_path):
     monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
     monkeypatch.setenv("GDRIVE_RAG_CREDENTIALS", str(tmp_path / "nope.json"))

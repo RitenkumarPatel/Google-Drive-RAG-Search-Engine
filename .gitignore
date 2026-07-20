@@ -1,0 +1,32 @@
+# Local working plan / build guide (kept untracked)
+claude.md
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+
+# Secrets & credentials
+.env
+.env.*
+!.env.example
+credentials.json
+client_secret*.json
+token*.json
+
+# Data / index stores
+*.db
+*.sqlite3
+data/
+chroma/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

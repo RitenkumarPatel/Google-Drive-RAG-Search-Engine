@@ -107,6 +107,46 @@ def list_cmd(limit: int) -> None:
         )
 
 
+@cli.command()
+@click.argument("file_id")
+@click.option("--head", default=40, show_default=True, help="Lines of extracted text to preview.")
+def fetch(file_id: str, head: int) -> None:
+    """Fetch + parse a single Drive file; print its format, headings/pages, and a text preview."""
+    from . import parsers
+    from .auth import load_credentials
+    from .drive import get_file_metadata, get_service
+
+    settings = load_settings(require_api_key=False)
+    creds = load_credentials(settings)
+    if creds is None:
+        raise click.ClickException("Not authorized yet. Run `gdrive-rag login` first.")
+
+    session = get_service(creds)
+    try:
+        meta = get_file_metadata(session, file_id)
+        doc = parsers.fetch_document(session, meta)
+    except parsers.UnsupportedFormat as e:
+        raise click.ClickException(str(e))
+    except Exception as e:
+        raise click.ClickException(
+            f"Drive request failed: {e}\n"
+            "If you're behind an HTTP proxy, set https_proxy/http_proxy (e.g. in .env)."
+        )
+
+    click.echo(f"name    : {doc.name}")
+    click.echo(f"format  : {doc.fmt}  ({doc.mime_type})")
+    click.echo(f"chars   : {len(doc.text)}")
+    if doc.pages:
+        click.echo(f"pages   : {len(doc.pages)}")
+    if doc.sections:
+        click.echo(f"headings: {len(doc.sections)}")
+        for s in doc.sections[:10]:
+            click.echo(f"    - {s.path}")
+    click.echo(f"\n--- text (first {head} lines) ---")
+    for line in doc.text.splitlines()[:head]:
+        click.echo(line)
+
+
 def main() -> None:  # pragma: no cover - thin wrapper
     cli()
 

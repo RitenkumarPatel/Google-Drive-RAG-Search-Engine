@@ -46,6 +46,43 @@ def list_files(session, limit: int = 20) -> list[dict]:
     return files[:limit]
 
 
+def get_file_metadata(session, file_id: str) -> dict:
+    """Return metadata for a single file.
+
+    Includes candidate content-version fields (``md5Checksum`` for binaries,
+    ``modifiedTime``/``version`` otherwise) that Stage 3 uses for idempotent IDs.
+    """
+    resp = session.get(
+        f"{_API}/files/{file_id}",
+        params={"fields": "id,name,mimeType,modifiedTime,md5Checksum,version,size"},
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def export_file(session, file_id: str, mime_type: str = "text/markdown") -> str:
+    """Export a native Google file (Doc/Sheet/Slide) as text in ``mime_type``."""
+    resp = session.get(
+        f"{_API}/files/{file_id}/export",
+        params={"mimeType": mime_type},
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.text
+
+
+def download_file(session, file_id: str) -> bytes:
+    """Download the raw bytes of a binary file (PDF/DOCX/MD/TXT/…)."""
+    resp = session.get(
+        f"{_API}/files/{file_id}",
+        params={"alt": "media"},
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.content
+
+
 def get_user_email(session) -> str | None:
     """Best-effort authenticated account email (None if unavailable)."""
     try:

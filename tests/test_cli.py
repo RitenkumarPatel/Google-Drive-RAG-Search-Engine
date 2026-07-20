@@ -104,6 +104,59 @@ def test_list_reports_network_error(monkeypatch):
     assert "failed" in result.output.lower()
 
 
+def test_fetch_requires_login(monkeypatch):
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("gdrive_rag.auth.load_credentials", lambda settings: None)
+
+    result = CliRunner().invoke(cli, ["fetch", "abc"])
+
+    assert result.exit_code != 0
+    assert "login" in result.output.lower()
+
+
+def test_fetch_prints_summary(monkeypatch):
+    from gdrive_rag import parsers
+
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("gdrive_rag.auth.load_credentials", lambda settings: object())
+    monkeypatch.setattr("gdrive_rag.drive.get_service", lambda creds: object())
+    monkeypatch.setattr(
+        "gdrive_rag.drive.get_file_metadata",
+        lambda session, file_id: {"id": file_id, "name": "CS 213", "mimeType": "text/markdown"},
+    )
+    doc = parsers.ParsedDoc(
+        "abc", "CS 213", "text/markdown", "markdown", "# Intro\nbody",
+        sections=[parsers.Section(0, "Intro")], pages=[],
+    )
+    monkeypatch.setattr("gdrive_rag.parsers.fetch_document", lambda session, meta: doc)
+
+    result = CliRunner().invoke(cli, ["fetch", "abc"])
+
+    assert result.exit_code == 0, result.output
+    assert "CS 213" in result.output
+    assert "markdown" in result.output
+    assert "Intro" in result.output
+
+
+def test_fetch_unsupported(monkeypatch):
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("gdrive_rag.auth.load_credentials", lambda settings: object())
+    monkeypatch.setattr("gdrive_rag.drive.get_service", lambda creds: object())
+    monkeypatch.setattr(
+        "gdrive_rag.drive.get_file_metadata",
+        lambda session, file_id: {
+            "id": file_id,
+            "name": "Sheet",
+            "mimeType": "application/vnd.google-apps.spreadsheet",
+        },
+    )
+
+    result = CliRunner().invoke(cli, ["fetch", "abc"])
+
+    assert result.exit_code != 0
+    assert "unsupported" in result.output.lower()
+
+
 def test_login_missing_credentials(monkeypatch, tmp_path):
     monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
     monkeypatch.setenv("GDRIVE_RAG_CREDENTIALS", str(tmp_path / "nope.json"))

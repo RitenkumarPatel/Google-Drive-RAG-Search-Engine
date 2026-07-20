@@ -46,6 +46,33 @@ def list_files(session, limit: int = 20) -> list[dict]:
     return files[:limit]
 
 
+def list_all_ids(session) -> list[str]:
+    """Return every non-trashed file ID (id-only, fully paginated).
+
+    Used for deletion reconciliation: comparing this full set to the indexed set
+    reveals files that were removed/trashed since the last index, regardless of any
+    ``--limit`` on how many files a given run actually embeds.
+    """
+    ids: list[str] = []
+    page_token = None
+    while True:
+        params = {
+            "pageSize": 1000,
+            "fields": "nextPageToken, files(id)",
+            "q": "trashed=false",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        resp = session.get(f"{_API}/files", params=params, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        ids.extend(f["id"] for f in data.get("files", []))
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+    return ids
+
+
 def get_file_metadata(session, file_id: str) -> dict:
     """Return metadata for a single file.
 

@@ -157,6 +157,41 @@ def test_fetch_unsupported(monkeypatch):
     assert "unsupported" in result.output.lower()
 
 
+def test_index_requires_login(monkeypatch):
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    monkeypatch.setattr("gdrive_rag.auth.load_credentials", lambda settings: None)
+
+    result = CliRunner().invoke(cli, ["index"])
+
+    assert result.exit_code != 0
+    assert "login" in result.output.lower()
+
+
+def test_index_missing_key(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+
+    result = CliRunner().invoke(cli, ["index"])
+
+    assert result.exit_code != 0
+    assert "GEMINI_API_KEY" in result.output
+
+
+def test_stats_empty(monkeypatch, tmp_path):
+    import pytest
+
+    pytest.importorskip("chromadb")
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setenv("GDRIVE_RAG_DATA_DIR", str(tmp_path))
+
+    result = CliRunner().invoke(cli, ["stats"])
+
+    assert result.exit_code == 0, result.output
+    assert "files : 0" in result.output
+    assert "chunks: 0" in result.output
+
+
 def test_login_missing_credentials(monkeypatch, tmp_path):
     monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
     monkeypatch.setenv("GDRIVE_RAG_CREDENTIALS", str(tmp_path / "nope.json"))

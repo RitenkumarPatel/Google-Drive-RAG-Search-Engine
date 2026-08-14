@@ -187,6 +187,7 @@ def index(limit: int, delay: float | None) -> None:
     session = get_service(creds)
     store = Store(settings)
     indexed = chunk_total = unchanged = unsupported = empty = failed = 0
+    failed_details: list[tuple[str, str]] = []
 
     try:
         all_drive_files = list_all_metadata(session)
@@ -240,6 +241,8 @@ def index(limit: int, delay: float | None) -> None:
                 except Exception as e:
                     failed += 1
                     store.mark_file_failed(f, str(e))
+                    doc_name = f.get("name") or f.get("id", "Unknown")
+                    failed_details.append((doc_name, str(e)))
                     continue
 
         store.set_sync_meta("last_sync_completed_at", datetime.datetime.now(datetime.timezone.utc).isoformat())
@@ -258,6 +261,10 @@ def index(limit: int, delay: float | None) -> None:
         f"unchanged {unchanged}, unsupported {unsupported}, empty {empty}, "
         f"failed {failed}, purged {len(purged)}"
     )
+    if failed_details:
+        click.echo(f"\nFailed document(s) ({len(failed_details)}):")
+        for name, err in failed_details:
+            click.echo(f"  • {name}: {err}")
 
 
 @cli.command()

@@ -14,7 +14,7 @@ import random
 import time
 
 _BATCH = 100
-_MAX_RETRIES = 6
+_MAX_RETRIES = 5
 _BASE_DELAY = 2.0
 _MAX_DELAY = 60.0
 

@@ -381,3 +381,33 @@ def test_ask_reports_error(monkeypatch, tmp_path):
 
     assert result.exit_code != 0
     assert "Ask failed" in result.output
+
+
+def test_index_prints_failure_details(monkeypatch, tmp_path):
+    import pytest
+
+    pytest.importorskip("chromadb")
+
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    monkeypatch.setenv("GDRIVE_RAG_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("gdrive_rag.auth.load_credentials", lambda settings: object())
+    monkeypatch.setattr("gdrive_rag.drive.get_service", lambda creds: object())
+
+    files = [
+        {"id": "1", "name": "Broken_File.pdf", "mimeType": "application/pdf", "modifiedTime": "2026-08-14T10:00:00Z"},
+    ]
+    monkeypatch.setattr("gdrive_rag.drive.list_all_metadata", lambda session: files)
+
+    def _fail_fetch(session, meta):
+        raise RuntimeError("Corrupt PDF stream")
+
+    monkeypatch.setattr("gdrive_rag.parsers.fetch_document", _fail_fetch)
+
+    result = CliRunner().invoke(cli, ["index"])
+
+    assert result.exit_code == 0, result.output
+    assert "failed 1" in result.output
+    assert "Failed document(s) (1):" in result.output
+    assert "Broken_File.pdf: Corrupt PDF stream" in result.output
+

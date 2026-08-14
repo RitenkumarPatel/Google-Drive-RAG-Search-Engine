@@ -11,8 +11,7 @@ def _settings(tmp_path) -> Settings:
     return Settings(
         gemini_api_key="",
         chat_model="m",
-        embed_model="e",
-        embed_dims=768,
+        local_embed_model="BAAI/bge-base-en-v1.5",
         data_dir=tmp_path,
         credentials_path=tmp_path / "credentials.json",
         token_path=tmp_path / "token.json",

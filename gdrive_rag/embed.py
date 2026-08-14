@@ -1,28 +1,43 @@
-"""Embed chunk / query text with the Gemini embeddings model.
+"""Embed chunk / query text with a local sentence-transformers model.
 
-``gemini-embedding-001`` with retrieval task types (RETRIEVAL_DOCUMENT for chunks,
-RETRIEVAL_QUERY for queries — asymmetric retrieval improves recall). Vectors are
-L2-normalized (required for output dims < 3072, so cosine == dot product), batched,
-paced with proactive throttling delays, and retried with jittered exponential backoff
-on rate-limit (HTTP 429) errors.
+The model (``BAAI/bge-base-en-v1.5`` by default) is loaded once on first call and
+cached in-process as a module-level singleton. No API calls, no rate limits, and no
+network required after the one-time HuggingFace model download.
+
+BGE models use asymmetric retrieval prompts:
+  - ``RETRIEVAL_QUERY``    → prepend the BGE query instruction prefix
+  - ``RETRIEVAL_DOCUMENT`` → no prefix (raw chunk text)
+
+Vectors are L2-normalized so that cosine similarity equals dot product, consistent
+with ChromaDB's ``hnsw:space: "cosine"`` index.
+
+The ``client`` and ``delay`` parameters are accepted but silently ignored; they are
+preserved so existing call sites (``cli.py``, ``retrieve.py``) need no changes.
 """
 
 from __future__ import annotations
 
 import math
-import random
-import time
 
-_BATCH = 100
-_MAX_RETRIES = 5
-_BASE_DELAY = 2.0
-_MAX_DELAY = 60.0
+_BATCH = 64
+_MODEL_CACHE: dict = {}
+
+# BGE's documented query instruction for asymmetric retrieval
+_BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
-def get_client(settings):
-    from google import genai
+def _is_bge(model_name: str) -> bool:
+    return "bge" in model_name.lower()
 
-    return genai.Client(api_key=settings.gemini_api_key)
+
+def get_model(settings):
+    """Load (or return cached) SentenceTransformer for the configured model name."""
+    from sentence_transformers import SentenceTransformer
+
+    name = settings.local_embed_model
+    if name not in _MODEL_CACHE:
+        _MODEL_CACHE[name] = SentenceTransformer(name)
+    return _MODEL_CACHE[name]
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:
@@ -32,53 +47,29 @@ def _l2_normalize(vec: list[float]) -> list[float]:
     return [x / norm for x in vec]
 
 
-def _is_rate_limit(exc) -> bool:
-    return getattr(exc, "code", None) == 429
-
-
-def _embed_batch(client, settings, batch, task_type) -> list[list[float]]:
-    from google.genai import errors, types
-
-    delay = _BASE_DELAY
-    for attempt in range(_MAX_RETRIES):
-        try:
-            resp = client.models.embed_content(
-                model=settings.embed_model,
-                contents=batch,
-                config=types.EmbedContentConfig(
-                    task_type=task_type,
-                    output_dimensionality=settings.embed_dims,
-                ),
-            )
-            return [list(e.values) for e in resp.embeddings]
-        except errors.APIError as exc:
-            if _is_rate_limit(exc) and attempt < _MAX_RETRIES - 1:
-                sleep_time = min(_MAX_DELAY, delay * (0.8 + 0.4 * random.random()))
-                time.sleep(sleep_time)
-                delay = min(_MAX_DELAY, delay * 2.0)
-                continue
-            raise
-    return []  # pragma: no cover - loop always returns or raises
-
-
 def embed_texts(
     settings,
     texts,
     *,
     task_type: str = "RETRIEVAL_DOCUMENT",
-    client=None,
+    client=None,          # ignored — kept for call-site compatibility
     batch_size: int = _BATCH,
-    delay: float | None = None,
+    delay: float | None = None,  # ignored — kept for call-site compatibility
 ) -> list[list[float]]:
     """Return one L2-normalized embedding per input text (order preserved)."""
     if not texts:
         return []
-    client = client or get_client(settings)
-    pace_delay = getattr(settings, "embed_delay", 0.0) if delay is None else delay
+
+    model = get_model(settings)
+    is_query = task_type == "RETRIEVAL_QUERY"
+
+    # BGE asymmetric prefix: prepend only for queries, not for document chunks
+    if is_query and _is_bge(settings.local_embed_model):
+        texts = [_BGE_QUERY_PREFIX + t for t in texts]
+
     vectors: list[list[float]] = []
     for i in range(0, len(texts), batch_size):
-        if i > 0 and pace_delay > 0:
-            time.sleep(pace_delay)
-        raw = _embed_batch(client, settings, texts[i:i + batch_size], task_type)
-        vectors.extend(_l2_normalize(v) for v in raw)
+        batch = texts[i : i + batch_size]
+        raw = model.encode(batch, normalize_embeddings=False, show_progress_bar=False)
+        vectors.extend(_l2_normalize(list(map(float, v))) for v in raw)
     return vectors

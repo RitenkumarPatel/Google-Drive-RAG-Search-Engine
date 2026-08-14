@@ -8,16 +8,14 @@ from gdrive_rag.config import ConfigError, Settings, load_settings
 def test_reads_env_and_applies_defaults(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
     monkeypatch.setenv("GEMINI_CHAT_MODEL", "gemini-x")
-    monkeypatch.delenv("GEMINI_EMBED_MODEL", raising=False)
-    monkeypatch.delenv("GEMINI_EMBED_DIMS", raising=False)
+    monkeypatch.delenv("LOCAL_EMBED_MODEL", raising=False)
 
     s = load_settings(load_env=False)
 
     assert isinstance(s, Settings)
     assert s.gemini_api_key == "AIza-test"
-    assert s.chat_model == "gemini-x"           # from env
-    assert s.embed_model == "gemini-embedding-001"  # default
-    assert s.embed_dims == 768                   # default
+    assert s.chat_model == "gemini-x"                        # from env
+    assert s.local_embed_model == "BAAI/bge-base-en-v1.5"   # default
 
 
 def test_missing_key_raises(monkeypatch):

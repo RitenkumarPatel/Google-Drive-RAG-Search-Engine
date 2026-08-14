@@ -4,9 +4,7 @@ from gdrive_rag import retrieve
 
 
 class _Settings:
-    embed_model = "gemini-embedding-001"
-    embed_dims = 768
-    gemini_api_key = "test"
+    local_embed_model = "BAAI/bge-base-en-v1.5"
 
 
 class _FakeStore:

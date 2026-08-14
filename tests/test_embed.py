@@ -1,42 +1,35 @@
-"""Tests for gdrive_rag.embed — the Gemini client is faked (no network)."""
+"""Tests for gdrive_rag.embed — SentenceTransformer model is faked (no download)."""
 
 import math
+
+import numpy as np
+import pytest
 
 from gdrive_rag import embed
 
 
-class _Emb:
-    def __init__(self, values):
-        self.values = values
-
-
-class _Resp:
-    def __init__(self, rows):
-        self.embeddings = [_Emb(r) for r in rows]
-
-
-class _FakeModels:
-    def __init__(self):
-        self.calls = []
-
-    def embed_content(self, *, model, contents, config):
-        self.calls.append(
-            {"model": model, "n": len(contents),
-             "task_type": config.task_type, "dims": config.output_dimensionality}
-        )
-        return _Resp([[float(i), 0.0, 0.0] for i in range(len(contents))])
-
-
-class _FakeClient:
-    def __init__(self):
-        self.models = _FakeModels()
-
-
 class _Settings:
-    embed_model = "gemini-embedding-001"
-    embed_dims = 768
-    gemini_api_key = "test"
+    local_embed_model = "BAAI/bge-base-en-v1.5"
     embed_delay = 0.0
+
+
+class _FakeModel:
+    """Fake SentenceTransformer: returns a deterministic non-zero 3-dim vector per text."""
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+
+    def encode(self, texts, *, normalize_embeddings, show_progress_bar):
+        self.calls.append(list(texts))
+        return np.array([[float(i % 5 + 1), 0.0, 0.0] for i in range(len(texts))])
+
+
+@pytest.fixture(autouse=True)
+def clear_model_cache():
+    """Ensure model cache is empty before and after each test."""
+    embed._MODEL_CACHE.clear()
+    yield
+    embed._MODEL_CACHE.clear()
 
 
 def test_l2_normalize_unit():
@@ -51,55 +44,107 @@ def test_embed_texts_empty():
     assert embed.embed_texts(_Settings(), []) == []
 
 
-def test_embed_texts_batches_and_normalizes():
-    client = _FakeClient()
-    out = embed.embed_texts(_Settings(), [f"t{i}" for i in range(150)], client=client, batch_size=100)
+def test_embed_texts_batches_and_normalizes(monkeypatch):
+    fake = _FakeModel()
+    monkeypatch.setattr(embed, "get_model", lambda s: fake)
+
+    out = embed.embed_texts(_Settings(), [f"t{i}" for i in range(150)], batch_size=64)
 
     assert len(out) == 150
-    assert [c["n"] for c in client.models.calls] == [100, 50]  # two batches
-    assert client.models.calls[0]["task_type"] == "RETRIEVAL_DOCUMENT"
-    assert client.models.calls[0]["dims"] == 768
-    for v in out:  # every vector is unit-norm or the zero vector
+    assert len(fake.calls) == 3          # 64 + 64 + 22
+    assert len(fake.calls[0]) == 64
+    assert len(fake.calls[1]) == 64
+    assert len(fake.calls[2]) == 22
+    for v in out:                        # every vector is unit-norm or the zero vector
         n = math.sqrt(sum(x * x for x in v))
         assert n < 1e-6 or abs(n - 1.0) < 1e-6
-    assert any(math.sqrt(sum(x * x for x in v)) > 0.5 for v in out)  # some are non-trivial
+    assert any(math.sqrt(sum(x * x for x in v)) > 0.5 for v in out)  # some non-trivial
 
 
-def test_embed_texts_pacing_delay(monkeypatch):
-    sleeps = []
-    monkeypatch.setattr(embed.time, "sleep", lambda s: sleeps.append(s))
-    client = _FakeClient()
-    out = embed.embed_texts(_Settings(), [f"t{i}" for i in range(250)], client=client, batch_size=100, delay=0.5)
+def test_bge_query_prefix_applied(monkeypatch):
+    """RETRIEVAL_QUERY with a bge model should prepend the BGE instruction prefix."""
+    captured: list[str] = []
 
-    assert len(out) == 250
-    # Slept between batch 1->2 and batch 2->3
-    assert len(sleeps) == 2
-    assert sleeps == [0.5, 0.5]
+    class _PrefixModel:
+        def encode(self, texts, **kw):
+            captured.extend(texts)
+            return np.array([[1.0, 0.0] for _ in texts])
+
+    monkeypatch.setattr(embed, "get_model", lambda s: _PrefixModel())
+
+    embed.embed_texts(_Settings(), ["hello world"], task_type="RETRIEVAL_QUERY")
+
+    assert len(captured) == 1
+    assert captured[0].startswith("Represent this sentence for searching relevant passages: ")
+    assert "hello world" in captured[0]
 
 
-def test_embed_retries_on_rate_limit(monkeypatch):
-    from google.genai import errors
+def test_document_task_type_no_prefix(monkeypatch):
+    """RETRIEVAL_DOCUMENT should NOT prepend any prefix."""
+    captured: list[str] = []
 
-    monkeypatch.setattr(embed.time, "sleep", lambda _s: None)
+    class _PrefixModel:
+        def encode(self, texts, **kw):
+            captured.extend(texts)
+            return np.array([[1.0, 0.0] for _ in texts])
 
-    class _FlakyModels:
-        def __init__(self):
-            self.n = 0
+    monkeypatch.setattr(embed, "get_model", lambda s: _PrefixModel())
 
-        def embed_content(self, *, model, contents, config):
-            self.n += 1
-            if self.n == 1:
-                raise errors.APIError(
-                    429, {"error": {"code": 429, "message": "rate", "status": "RESOURCE_EXHAUSTED"}}
-                )
-            return _Resp([[1.0, 0.0] for _ in contents])
+    embed.embed_texts(_Settings(), ["hello world"], task_type="RETRIEVAL_DOCUMENT")
 
-    class _FlakyClient:
-        def __init__(self):
-            self.models = _FlakyModels()
+    assert captured[0] == "hello world"  # exactly as-is, no prefix
 
-    client = _FlakyClient()
-    out = embed.embed_texts(_Settings(), ["a", "b"], client=client)
 
-    assert client.models.n == 2  # failed once, retried, succeeded
-    assert len(out) == 2
+def test_non_bge_query_no_prefix(monkeypatch):
+    """Non-BGE models (e.g. all-MiniLM) should NOT get the BGE prefix even for queries."""
+    captured: list[str] = []
+
+    class _PrefixModel:
+        def encode(self, texts, **kw):
+            captured.extend(texts)
+            return np.array([[1.0, 0.0] for _ in texts])
+
+    class _MiniLMSettings:
+        local_embed_model = "all-MiniLM-L6-v2"
+        embed_delay = 0.0
+
+    monkeypatch.setattr(embed, "get_model", lambda s: _PrefixModel())
+
+    embed.embed_texts(_MiniLMSettings(), ["hello"], task_type="RETRIEVAL_QUERY")
+
+    assert captured[0] == "hello"  # no prefix for non-bge models
+
+
+def test_delay_param_accepted_without_error(monkeypatch):
+    """delay kwarg is a no-op but must not raise."""
+    monkeypatch.setattr(embed, "get_model", lambda s: _FakeModel())
+    out = embed.embed_texts(_Settings(), ["a"], delay=5.0)
+    assert len(out) == 1
+
+
+def test_client_param_accepted_without_error(monkeypatch):
+    """client kwarg is a no-op but must not raise."""
+    monkeypatch.setattr(embed, "get_model", lambda s: _FakeModel())
+    out = embed.embed_texts(_Settings(), ["a"], client=object())
+    assert len(out) == 1
+
+
+def test_model_cached_after_first_load(monkeypatch):
+    """get_model should only instantiate SentenceTransformer once per model name."""
+    calls = []
+
+    class _FakeST:
+        def __init__(self, name):
+            calls.append(name)
+
+        def encode(self, texts, **kw):
+            return np.array([[1.0] for _ in texts])
+
+    import sentence_transformers as _st_mod
+    monkeypatch.setattr(_st_mod, "SentenceTransformer", _FakeST)
+
+    s = _Settings()
+    embed.get_model(s)
+    embed.get_model(s)  # second call — must not re-instantiate
+
+    assert len(calls) == 1

@@ -25,9 +25,8 @@ def config() -> None:
     except ConfigError as e:  # pragma: no cover - defensive
         raise click.ClickException(str(e))
     click.echo(f"chat_model    : {s.chat_model}")
-    click.echo(f"embed_model   : {s.embed_model}")
-    click.echo(f"embed_dims    : {s.embed_dims}")
-    click.echo(f"embed_delay   : {s.embed_delay}s")
+    click.echo(f"local_embed   : {s.local_embed_model}")
+    click.echo(f"embed_delay   : {s.embed_delay}s (no-op)")
     click.echo(f"data_dir      : {s.data_dir}")
     click.echo(f"GEMINI_API_KEY: {'set' if s.gemini_api_key else 'MISSING'}")
 
@@ -177,7 +176,7 @@ def index(limit: int, delay: float | None) -> None:
     from .store import Store, content_version
 
     try:
-        settings = load_settings()  # API key required — embeddings hit Gemini
+        settings = load_settings(require_api_key=False)  # local embeddings — no API key needed for indexing
     except ConfigError as e:
         raise click.ClickException(str(e))
     creds = load_credentials(settings)
@@ -345,7 +344,7 @@ def search_cmd(query: str, k: int) -> None:
     from .store import Store
 
     try:
-        settings = load_settings()  # API key required — the query is embedded
+        settings = load_settings(require_api_key=False)  # local query embedding — no API key needed
     except ConfigError as e:
         raise click.ClickException(str(e))
 

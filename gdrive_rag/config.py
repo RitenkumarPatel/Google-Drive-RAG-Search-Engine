@@ -17,12 +17,11 @@ class ConfigError(RuntimeError):
 class Settings:
     gemini_api_key: str
     chat_model: str
-    embed_model: str
-    embed_dims: int
+    local_embed_model: str
     data_dir: Path
     credentials_path: Path
     token_path: Path
-    embed_delay: float = 0.0
+    embed_delay: float = 0.0  # kept as a no-op for backward compat with existing .env files
 
 
 def load_settings(*, require_api_key: bool = True, load_env: bool = True) -> Settings:
@@ -46,8 +45,7 @@ def load_settings(*, require_api_key: bool = True, load_env: bool = True) -> Set
     return Settings(
         gemini_api_key=api_key,
         chat_model=os.environ.get("GEMINI_CHAT_MODEL", "gemini-flash-latest").strip(),
-        embed_model=os.environ.get("GEMINI_EMBED_MODEL", "gemini-embedding-001").strip(),
-        embed_dims=int(os.environ.get("GEMINI_EMBED_DIMS", "768")),
+        local_embed_model=os.environ.get("LOCAL_EMBED_MODEL", "BAAI/bge-base-en-v1.5").strip(),
         data_dir=Path(os.environ.get("GDRIVE_RAG_DATA_DIR", "./data")).expanduser(),
         credentials_path=Path(
             os.environ.get("GDRIVE_RAG_CREDENTIALS", "./credentials.json")

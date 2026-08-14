@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import embed, retrieve
+from . import retrieve
 from .retrieve import SearchHit
 
 
@@ -100,8 +100,10 @@ def generate_answer(
     context_str, citations = format_context(hits)
     prompt = build_prompt(query, context_str)
 
-    client = client or embed.get_client(settings)
+    from google import genai
     from google.genai import errors as genai_errors
+
+    client = client or genai.Client(api_key=settings.gemini_api_key)
 
     try:
         if hasattr(client, "chats") and hasattr(client.chats, "create"):

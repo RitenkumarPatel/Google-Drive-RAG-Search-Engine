@@ -168,14 +168,16 @@ def test_index_requires_login(monkeypatch):
     assert "login" in result.output.lower()
 
 
-def test_index_missing_key(monkeypatch):
+def test_index_proceeds_without_api_key(monkeypatch):
+    """index uses local embeddings — GEMINI_API_KEY is not required for indexing."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("gdrive_rag.auth.load_credentials", lambda settings: None)
 
     result = CliRunner().invoke(cli, ["index"])
 
     assert result.exit_code != 0
-    assert "GEMINI_API_KEY" in result.output
+    assert "login" in result.output.lower()  # fails at Drive login, not at API key
 
 
 def test_stats_empty(monkeypatch, tmp_path):
@@ -296,14 +298,23 @@ def test_search_prints_hits(monkeypatch, tmp_path):
     assert "program in execution" in result.output
 
 
-def test_search_missing_key(monkeypatch):
+def test_search_proceeds_without_api_key(monkeypatch, tmp_path):
+    """search uses local query embedding — GEMINI_API_KEY is not required."""
+    import pytest
+    pytest.importorskip("chromadb")
+
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setenv("GDRIVE_RAG_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "gdrive_rag.retrieve.search",
+        lambda settings, store, query, k=6, client=None: [],
+    )
 
     result = CliRunner().invoke(cli, ["search", "q"])
 
-    assert result.exit_code != 0
-    assert "GEMINI_API_KEY" in result.output
+    assert result.exit_code == 0
+    assert "GEMINI_API_KEY" not in result.output  # no key error
 
 
 def test_login_missing_credentials(monkeypatch, tmp_path):

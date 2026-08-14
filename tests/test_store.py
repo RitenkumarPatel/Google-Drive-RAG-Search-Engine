@@ -82,3 +82,30 @@ def test_purge_and_reconcile(tmp_path):
     s.purge_file("A")
     assert s.stats() == {"files": 0, "chunks": 0}
     s.close()
+
+
+def test_records_and_failed_tracking(tmp_path):
+    s = store_mod.Store(_Settings(tmp_path))
+    s.replace_file(_meta(fid="f1", name="OS Notes", mod="2026-08-14T10:00:00Z"), [_chunk(0)], [_vec()])
+    s.mark_file_failed(_meta(fid="f2", name="Huge Doc", mod="2026-08-14T11:00:00Z"), "Rate limit 429")
+
+    records = s.list_indexed_records()
+    assert len(records) == 2
+    # Sorted by modified_time desc
+    assert records[0]["file_id"] == "f2"
+    assert records[0]["status"] == "failed"
+    assert records[0]["last_error"] == "Rate limit 429"
+
+    assert records[1]["file_id"] == "f1"
+    assert records[1]["status"] == "indexed"
+    assert records[1]["chunk_count"] == 1
+
+    # Failed file is not counted as indexed in stats()
+    assert s.stats()["files"] == 1
+
+    # Sync metadata key-value
+    s.set_sync_meta("last_sync", "2026-08-14T12:00:00Z")
+    assert s.get_sync_meta("last_sync") == "2026-08-14T12:00:00Z"
+    assert s.get_sync_meta("missing") is None
+
+    s.close()

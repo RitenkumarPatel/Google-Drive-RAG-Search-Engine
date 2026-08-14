@@ -188,8 +188,82 @@ def test_stats_empty(monkeypatch, tmp_path):
     result = CliRunner().invoke(cli, ["stats"])
 
     assert result.exit_code == 0, result.output
-    assert "files : 0" in result.output
-    assert "chunks: 0" in result.output
+    assert "files    : 0" in result.output
+    assert "chunks   : 0" in result.output
+
+
+def test_status_empty(monkeypatch, tmp_path):
+    import pytest
+
+    pytest.importorskip("chromadb")
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setenv("GDRIVE_RAG_DATA_DIR", str(tmp_path))
+
+    result = CliRunner().invoke(cli, ["status"])
+
+    assert result.exit_code == 0, result.output
+    assert "No documents indexed yet" in result.output
+
+
+def test_status_with_records(monkeypatch, tmp_path):
+    import pytest
+
+    pytest.importorskip("chromadb")
+    from gdrive_rag.chunker import Chunk
+    from gdrive_rag.store import Store
+
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setenv("GDRIVE_RAG_DATA_DIR", str(tmp_path))
+
+    class _Settings:
+        data_dir = tmp_path
+
+    s = Store(_Settings())
+    chunk = Chunk("f1", "OS Notes", "text/markdown", "markdown", 0, "text", {"type": "heading", "value": "A"})
+    s.replace_file({"id": "f1", "name": "OS Notes", "mimeType": "text/markdown", "modifiedTime": "2026-08-14T10:00:00Z"}, [chunk], [[0.1, 0.2]])
+    s.close()
+
+    result = CliRunner().invoke(cli, ["status"])
+
+    assert result.exit_code == 0, result.output
+    assert "OS Notes" in result.output
+    assert "Total Files Indexed : 1" in result.output
+
+
+def test_index_delta_sync(monkeypatch, tmp_path):
+    import pytest
+
+    pytest.importorskip("chromadb")
+    from gdrive_rag import parsers
+
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    monkeypatch.setenv("GDRIVE_RAG_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("gdrive_rag.auth.load_credentials", lambda settings: object())
+    monkeypatch.setattr("gdrive_rag.drive.get_service", lambda creds: object())
+
+    files = [
+        {"id": "1", "name": "Doc A", "mimeType": "text/markdown", "modifiedTime": "2026-08-14T10:00:00Z"},
+        {"id": "2", "name": "Doc B", "mimeType": "text/markdown", "modifiedTime": "2026-08-14T11:00:00Z"},
+    ]
+    monkeypatch.setattr("gdrive_rag.drive.list_all_metadata", lambda session: files)
+    monkeypatch.setattr(
+        "gdrive_rag.parsers.fetch_document",
+        lambda session, meta: parsers.ParsedDoc(
+            meta["id"], meta["name"], meta["mimeType"], "markdown", "Some body content", [], []
+        ),
+    )
+    monkeypatch.setattr("gdrive_rag.embed.embed_texts", lambda settings, texts, delay=None: [[0.1, 0.2, 0.3]] * len(texts))
+
+    # First index run: indexes 2 files
+    res1 = CliRunner().invoke(cli, ["index"])
+    assert res1.exit_code == 0, res1.output
+    assert "Indexed 2 file(s)" in res1.output
+
+    # Second index run: both files are unchanged
+    res2 = CliRunner().invoke(cli, ["index"])
+    assert res2.exit_code == 0, res2.output
+    assert "All 2 document(s) are up-to-date" in res2.output
 
 
 def test_search_prints_hits(monkeypatch, tmp_path):
@@ -307,4 +381,3 @@ def test_ask_reports_error(monkeypatch, tmp_path):
 
     assert result.exit_code != 0
     assert "Ask failed" in result.output
-

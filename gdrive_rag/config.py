@@ -22,6 +22,7 @@ class Settings:
     data_dir: Path
     credentials_path: Path
     token_path: Path
+    embed_delay: float = 0.0
 
 
 def load_settings(*, require_api_key: bool = True, load_env: bool = True) -> Settings:
@@ -52,4 +53,5 @@ def load_settings(*, require_api_key: bool = True, load_env: bool = True) -> Set
             os.environ.get("GDRIVE_RAG_CREDENTIALS", "./credentials.json")
         ).expanduser(),
         token_path=Path(os.environ.get("GDRIVE_RAG_TOKEN", "./token.json")).expanduser(),
+        embed_delay=float(os.environ.get("GEMINI_EMBED_DELAY", "0.0")),
     )

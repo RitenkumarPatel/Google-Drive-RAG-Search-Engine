@@ -8,9 +8,10 @@
 - **Multi-format parsing**: Ingests Google Docs (exported as Markdown), PDFs, Word Documents (`.docx`), Markdown (`.md`), and Plain Text (`.txt`).
 - **Format-adaptive citations**: Captures precise location anchors (PDF page numbers or hierarchical heading breadcrumbs like `Processes > Scheduling`).
 - **Smart chunking**: Recursive character chunker with contextual prefixes (`DocName — Heading` or `DocName — p.N`).
-- **Gemini Embeddings**: Asymmetric embeddings (`RETRIEVAL_DOCUMENT` during indexing, `RETRIEVAL_QUERY` during search) normalized for cosine similarity.
-- **Persistent storage & incremental sync**: ChromaDB vector store + SQLite state tracking (`content_version` hash/timestamp matching) with automatic deletion reconciliation.
+- **Gemini Embeddings & Rate-Limit Resilience**: Asymmetric embeddings (`RETRIEVAL_DOCUMENT` during indexing, `RETRIEVAL_QUERY` during search) normalized for cosine similarity, with proactive inter-batch pacing (`--delay`) and jittered exponential backoff on HTTP 429 errors.
+- **Persistent storage & incremental delta sync**: ChromaDB vector store + SQLite state tracking (`content_version` hash/timestamp matching) with automatic deletion reconciliation and resumption of previously failed/interrupted files.
 - **Grounded LLM Q&A**: Augmented synthesis via Gemini Chat (`client.chats.create` + `send_message`) attributing facts to retrieved source chunks with inline `[1]`, `[2]` citations and clickable Drive URLs.
+- **Visual Progress & State Visibility**: Terminal progress bar during indexing (`click.progressbar`) and formatted SQLite state inspection (`gdrive-rag status`).
 
 ---
 
@@ -20,17 +21,17 @@
 Google-Drive-RAG-Search-Engine/
 ├── gdrive_rag/
 │   ├── __init__.py      # Package metadata & version (0.0.1)
-│   ├── config.py        # Settings dataclass & .env loader
+│   ├── config.py        # Settings dataclass & .env loader (includes embed_delay)
 │   ├── auth.py          # OAuth2 flow & token management (token.json, 0600)
-│   ├── drive.py         # Google Drive REST API wrapper (AuthorizedSession)
+│   ├── drive.py         # Google Drive REST API wrapper (AuthorizedSession, bulk metadata)
 │   ├── parsers.py       # Extract text & format-adaptive location anchors
 │   ├── chunker.py       # Recursive chunking & context-prefixing
-│   ├── embed.py         # Gemini embeddings with retry & L2-normalization
-│   ├── store.py         # ChromaDB vectors + SQLite metadata & reconciliation
+│   ├── embed.py         # Gemini embeddings with jittered backoff, retry & pacing delay
+│   ├── store.py         # ChromaDB vectors + SQLite metadata, sync_meta & reconciliation
 │   ├── retrieve.py      # Semantic dense search
 │   ├── answer.py        # Grounded LLM answer generation with citations
-│   └── cli.py           # Click CLI commands
-├── tests/               # Pytest suite (69 unit tests, fully mocked/offline)
+│   └── cli.py           # Click CLI commands (status, stats, index with progress bar, ask, search)
+├── tests/               # Pytest suite (75 unit tests, fully mocked/offline)
 │   ├── test_config.py
 │   ├── test_auth.py
 │   ├── test_drive.py
@@ -51,7 +52,7 @@ Google-Drive-RAG-Search-Engine/
 
 1. **`config.py`**:
    - Manages configuration via `Settings` dataclass.
-   - Keys: `GEMINI_API_KEY`, `GEMINI_CHAT_MODEL` (default: `gemini-flash-latest`), `GEMINI_EMBED_MODEL` (default: `gemini-embedding-001`), `GEMINI_EMBED_DIMS` (default: `768`), `GDRIVE_RAG_DATA_DIR` (default: `./data`), `GDRIVE_RAG_CREDENTIALS` (default: `./credentials.json`), `GDRIVE_RAG_TOKEN` (default: `./token.json`).
+   - Keys: `GEMINI_API_KEY`, `GEMINI_CHAT_MODEL` (default: `gemini-flash-latest`), `GEMINI_EMBED_MODEL` (default: `gemini-embedding-001`), `GEMINI_EMBED_DIMS` (default: `768`), `GDRIVE_RAG_DATA_DIR` (default: `./data`), `GDRIVE_RAG_CREDENTIALS` (default: `./credentials.json`), `GDRIVE_RAG_TOKEN` (default: `./token.json`), `GEMINI_EMBED_DELAY` (default: `0.0`).
 
 2. **`auth.py`**:
    - Handles OAuth 2.0 authentication for `https://www.googleapis.com/auth/drive.readonly`.
@@ -60,7 +61,7 @@ Google-Drive-RAG-Search-Engine/
 
 3. **`drive.py`**:
    - Uses `AuthorizedSession` (from `requests`) instead of `google-api-python-client` to ensure HTTP proxy compatibility.
-   - Implements `list_files`, `list_all_ids`, `get_file_metadata`, `export_file` (exporting Google Docs to markdown), `download_file` (raw media bytes), and `get_user_email`.
+   - Implements `list_files`, `list_all_ids`, `list_all_metadata`, `get_file_metadata`, `export_file` (exporting Google Docs to markdown), `download_file` (raw media bytes), and `get_user_email`.
 
 4. **`parsers.py`**:
    - Data structures: `ParsedDoc`, `Section` (heading breadcrumb + char offset), and `PageSpan` (page number + start/end char offsets).
@@ -80,11 +81,11 @@ Google-Drive-RAG-Search-Engine/
 6. **`embed.py`**:
    - Calls `google-genai` SDK (`client.models.embed_content`).
    - Supports asymmetric task types: `RETRIEVAL_DOCUMENT` for document chunks, `RETRIEVAL_QUERY` for queries.
-   - Enforces L2 vector normalization for cosine distance matching and exponential backoff retry for HTTP 429 rate limits.
+   - Enforces L2 vector normalization for cosine distance matching, proactive pacing delays, and jittered exponential backoff retry for HTTP 429 rate limits.
 
 7. **`store.py`**:
    - **ChromaDB (`./data/chroma`)**: Persistent storage using cosine metric (`hnsw:space: "cosine"`). Stores chunk text, embeddings, and metadata (`file_id`, `name`, `mime_type`, `fmt`, `chunk_index`, `content_version`, `loc_type`, `loc_value`, `drive_url`).
-   - **SQLite (`./data/state.db`)**: Tracks file metadata (`file_id`, `name`, `content_version`, `chunk_count`, `indexed_at`).
+   - **SQLite (`./data/state.db`)**: Tracks file metadata (`file_id`, `name`, `content_version`, `modified_time`, `chunk_count`, `indexed_at`, `status`, `last_error`) and `sync_meta`.
    - **Idempotent indexing & deletion reconciliation**: Chunk IDs are derived deterministically via `uuid5(file_id:content_version:index)`. `reconcile(live_ids)` identifies and purges files deleted from Google Drive.
 
 8. **`retrieve.py`**:
@@ -102,8 +103,9 @@ Google-Drive-RAG-Search-Engine/
       - `login`: Run OAuth copy-paste login.
       - `list`: List Drive files.
       - `fetch <file_id>`: Test parsing & citation locator on a single file.
-      - `index [--limit N]`: Incremental index pipeline (fetch -> parse -> chunk -> embed -> store -> reconcile).
-      - `stats`: View indexed file and chunk counts.
+      - `index [--limit N] [--delay S]`: Incremental index pipeline with live `click.progressbar` and delta diff calculation.
+      - `status`: Clean tabular view of all locally tracked documents in SQLite with modification times and status.
+      - `stats`: View indexed file and chunk counts with last sync timestamp.
       - `search "<query>" [--k N]`: Dense semantic search (retrieval only).
       - `ask "<question>" [--k N]`: Grounded natural language Q&A with verifiable citations and Drive links.
 
@@ -111,9 +113,10 @@ Google-Drive-RAG-Search-Engine/
 
 ## 3. Status & MVP Verification
 
-### MVP Status: **Completed and Operational**
-- All 69 offline unit tests pass cleanly.
+### MVP Status: **Completed, Hardened & Operational**
+- All 75 offline unit tests pass cleanly.
 - End-to-end question answering pipeline verified with citation links and AFC warning resolved.
+- Full rate-limit resilience, incremental delta synchronization, progress bar, and SQLite state inspection enabled.
 
 ---
 

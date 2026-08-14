@@ -1,4 +1,4 @@
-"""Tests for gdrive_rag.drive.list_files pagination — the HTTP session is faked."""
+"""Tests for gdrive_rag.drive.list_files and list_all_metadata pagination — the HTTP session is faked."""
 
 from gdrive_rag import drive
 
@@ -53,3 +53,23 @@ def test_list_files_respects_limit():
 def test_list_files_empty():
     pages = [{"files": [], "nextPageToken": None}]
     assert drive.list_files(_FakeSession(pages), limit=10) == []
+
+
+def test_list_all_metadata_paginates():
+    pages = [
+        {
+            "files": [
+                {"id": "1", "name": "a", "mimeType": "x", "modifiedTime": "t1"},
+            ],
+            "nextPageToken": "P2",
+        },
+        {
+            "files": [
+                {"id": "2", "name": "b", "mimeType": "y", "modifiedTime": "t2"},
+            ],
+            "nextPageToken": None,
+        },
+    ]
+    out = drive.list_all_metadata(_FakeSession(pages))
+    assert [f["id"] for f in out] == ["1", "2"]
+    assert [f["name"] for f in out] == ["a", "b"]

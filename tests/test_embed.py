@@ -36,6 +36,7 @@ class _Settings:
     embed_model = "gemini-embedding-001"
     embed_dims = 768
     gemini_api_key = "test"
+    embed_delay = 0.0
 
 
 def test_l2_normalize_unit():
@@ -62,6 +63,18 @@ def test_embed_texts_batches_and_normalizes():
         n = math.sqrt(sum(x * x for x in v))
         assert n < 1e-6 or abs(n - 1.0) < 1e-6
     assert any(math.sqrt(sum(x * x for x in v)) > 0.5 for v in out)  # some are non-trivial
+
+
+def test_embed_texts_pacing_delay(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(embed.time, "sleep", lambda s: sleeps.append(s))
+    client = _FakeClient()
+    out = embed.embed_texts(_Settings(), [f"t{i}" for i in range(250)], client=client, batch_size=100, delay=0.5)
+
+    assert len(out) == 250
+    # Slept between batch 1->2 and batch 2->3
+    assert len(sleeps) == 2
+    assert sleeps == [0.5, 0.5]
 
 
 def test_embed_retries_on_rate_limit(monkeypatch):

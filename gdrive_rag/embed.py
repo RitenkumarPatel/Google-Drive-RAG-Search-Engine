@@ -3,17 +3,20 @@
 ``gemini-embedding-001`` with retrieval task types (RETRIEVAL_DOCUMENT for chunks,
 RETRIEVAL_QUERY for queries — asymmetric retrieval improves recall). Vectors are
 L2-normalized (required for output dims < 3072, so cosine == dot product), batched,
-and retried with exponential backoff on rate-limit (HTTP 429) errors.
+paced with proactive throttling delays, and retried with jittered exponential backoff
+on rate-limit (HTTP 429) errors.
 """
 
 from __future__ import annotations
 
 import math
+import random
 import time
 
 _BATCH = 100
-_MAX_RETRIES = 5
+_MAX_RETRIES = 6
 _BASE_DELAY = 2.0
+_MAX_DELAY = 60.0
 
 
 def get_client(settings):
@@ -50,8 +53,9 @@ def _embed_batch(client, settings, batch, task_type) -> list[list[float]]:
             return [list(e.values) for e in resp.embeddings]
         except errors.APIError as exc:
             if _is_rate_limit(exc) and attempt < _MAX_RETRIES - 1:
-                time.sleep(delay)
-                delay *= 2
+                sleep_time = min(_MAX_DELAY, delay * (0.8 + 0.4 * random.random()))
+                time.sleep(sleep_time)
+                delay = min(_MAX_DELAY, delay * 2.0)
                 continue
             raise
     return []  # pragma: no cover - loop always returns or raises
@@ -64,13 +68,17 @@ def embed_texts(
     task_type: str = "RETRIEVAL_DOCUMENT",
     client=None,
     batch_size: int = _BATCH,
+    delay: float | None = None,
 ) -> list[list[float]]:
     """Return one L2-normalized embedding per input text (order preserved)."""
     if not texts:
         return []
     client = client or get_client(settings)
+    pace_delay = getattr(settings, "embed_delay", 0.0) if delay is None else delay
     vectors: list[list[float]] = []
     for i in range(0, len(texts), batch_size):
+        if i > 0 and pace_delay > 0:
+            time.sleep(pace_delay)
         raw = _embed_batch(client, settings, texts[i:i + batch_size], task_type)
         vectors.extend(_l2_normalize(v) for v in raw)
     return vectors

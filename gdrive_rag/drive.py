@@ -23,14 +23,14 @@ def get_service(creds) -> AuthorizedSession:
 def list_files(session, limit: int = 20) -> list[dict]:
     """Return up to ``limit`` non-trashed files, newest first.
 
-    Each item has id / name / mimeType / modifiedTime. Handles pagination.
+    Each item has id / name / mimeType / modifiedTime / md5Checksum / version. Handles pagination.
     """
     files: list[dict] = []
     page_token = None
     while len(files) < limit:
         params = {
             "pageSize": min(_PAGE, limit - len(files)),
-            "fields": "nextPageToken, files(id,name,mimeType,modifiedTime)",
+            "fields": "nextPageToken, files(id,name,mimeType,modifiedTime,md5Checksum,version)",
             "orderBy": "modifiedTime desc",
             "q": "trashed=false",
         }
@@ -49,9 +49,7 @@ def list_files(session, limit: int = 20) -> list[dict]:
 def list_all_ids(session) -> list[str]:
     """Return every non-trashed file ID (id-only, fully paginated).
 
-    Used for deletion reconciliation: comparing this full set to the indexed set
-    reveals files that were removed/trashed since the last index, regardless of any
-    ``--limit`` on how many files a given run actually embeds.
+    Used for deletion reconciliation.
     """
     ids: list[str] = []
     page_token = None
@@ -71,6 +69,33 @@ def list_all_ids(session) -> list[str]:
         if not page_token:
             break
     return ids
+
+
+def list_all_metadata(session) -> list[dict]:
+    """Return metadata for every non-trashed file (fully paginated, 1000 per page).
+
+    Includes id, name, mimeType, modifiedTime, md5Checksum, and version.
+    Used for full-drive delta comparison and deletion reconciliation.
+    """
+    files: list[dict] = []
+    page_token = None
+    while True:
+        params = {
+            "pageSize": 1000,
+            "fields": "nextPageToken, files(id,name,mimeType,modifiedTime,md5Checksum,version)",
+            "orderBy": "modifiedTime desc",
+            "q": "trashed=false",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        resp = session.get(f"{_API}/files", params=params, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        files.extend(data.get("files", []))
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+    return files
 
 
 def get_file_metadata(session, file_id: str) -> dict:

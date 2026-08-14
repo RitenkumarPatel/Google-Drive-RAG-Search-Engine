@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import datetime
+import time
+
 import click
 
 from . import __version__
@@ -24,6 +27,7 @@ def config() -> None:
     click.echo(f"chat_model    : {s.chat_model}")
     click.echo(f"embed_model   : {s.embed_model}")
     click.echo(f"embed_dims    : {s.embed_dims}")
+    click.echo(f"embed_delay   : {s.embed_delay}s")
     click.echo(f"data_dir      : {s.data_dir}")
     click.echo(f"GEMINI_API_KEY: {'set' if s.gemini_api_key else 'MISSING'}")
 
@@ -151,14 +155,24 @@ def fetch(file_id: str, head: int) -> None:
         click.echo(line)
 
 
+def _format_time_str(raw: str | float | None) -> str:
+    if not raw:
+        return "—"
+    if isinstance(raw, (int, float)):
+        return datetime.datetime.fromtimestamp(raw, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
+    s = str(raw).replace("T", " ").rstrip("Z")
+    return s.split(".")[0][:16]
+
+
 @cli.command()
-@click.option("--limit", default=50, show_default=True, help="Max files to index this run.")
-def index(limit: int) -> None:
-    """Index your Drive: fetch → parse → chunk → embed → store (idempotent)."""
+@click.option("--limit", default=50, show_default=True, help="Max new/updated files to index (0 for all).")
+@click.option("--delay", default=None, type=float, help="Seconds to delay between embedding calls (rate limiting).")
+def index(limit: int, delay: float | None) -> None:
+    """Index your Drive: fetch → parse → chunk → embed → store (incremental delta sync)."""
     from . import parsers
     from .auth import load_credentials
     from .chunker import chunk_document
-    from .drive import get_service, list_all_ids, list_files
+    from .drive import get_service, list_all_metadata
     from .embed import embed_texts
     from .store import Store, content_version
 
@@ -173,30 +187,62 @@ def index(limit: int) -> None:
     session = get_service(creds)
     store = Store(settings)
     indexed = chunk_total = unchanged = unsupported = empty = failed = 0
+
     try:
-        files = list_files(session, limit=limit)
-        for f in files:
+        all_drive_files = list_all_metadata(session)
+        live_ids = [f["id"] for f in all_drive_files]
+        purged = store.reconcile(live_ids)
+
+        target_files: list[dict] = []
+        for f in all_drive_files:
             if parsers.classify(f.get("mimeType")) is None:
                 unsupported += 1
                 continue
-            if store.get_indexed_version(f["id"]) == content_version(f):
+            rec = store.get_file_record(f["id"])
+            if rec and rec["status"] == "indexed" and rec["content_version"] == content_version(f):
                 unchanged += 1
                 continue
-            try:
-                doc = parsers.fetch_document(session, f)
-                if not doc.text.strip():
-                    empty += 1
+            target_files.append(f)
+
+        if not target_files:
+            click.echo(
+                f"All {unchanged} document(s) are up-to-date "
+                f"({unsupported} unsupported, {len(purged)} purged)."
+            )
+            store.set_sync_meta("last_sync_completed_at", datetime.datetime.now(datetime.timezone.utc).isoformat())
+            return
+
+        to_index = target_files if limit <= 0 else target_files[:limit]
+        remaining = len(target_files) - len(to_index)
+        click.echo(
+            f"Found {len(target_files)} file(s) requiring indexing "
+            f"({unchanged} unchanged, {unsupported} unsupported)."
+        )
+        if remaining > 0:
+            click.echo(f"Indexing {len(to_index)} file(s) this run (budget limit: {limit}).")
+
+        with click.progressbar(
+            to_index,
+            label="Indexing documents",
+            item_show_func=lambda f: (f.get("name") or f.get("id", ""))[:32] if f else "",
+        ) as bar:
+            for f in bar:
+                try:
+                    doc = parsers.fetch_document(session, f)
+                    if not doc.text.strip():
+                        empty += 1
+                        continue
+                    chunks = chunk_document(doc)
+                    vectors = embed_texts(settings, [c.text for c in chunks], delay=delay)
+                    store.replace_file(f, chunks, vectors)
+                    indexed += 1
+                    chunk_total += len(chunks)
+                except Exception as e:
+                    failed += 1
+                    store.mark_file_failed(f, str(e))
                     continue
-                chunks = chunk_document(doc)
-                vectors = embed_texts(settings, [c.text for c in chunks])
-                store.replace_file(f, chunks, vectors)
-            except Exception as e:  # one bad file shouldn't abort the whole run
-                failed += 1
-                click.echo(f"  ! skipped {f.get('name', f['id'])}: {e}", err=True)
-                continue
-            indexed += 1
-            chunk_total += len(chunks)
-        purged = store.reconcile(list_all_ids(session))
+
+        store.set_sync_meta("last_sync_completed_at", datetime.datetime.now(datetime.timezone.utc).isoformat())
     except click.ClickException:
         raise
     except Exception as e:
@@ -208,26 +254,66 @@ def index(limit: int) -> None:
         store.close()
 
     click.echo(
-        f"indexed {indexed} file(s), {chunk_total} chunk(s); "
+        f"\n✓ Indexed {indexed} file(s), {chunk_total} chunk(s); "
         f"unchanged {unchanged}, unsupported {unsupported}, empty {empty}, "
         f"failed {failed}, purged {len(purged)}"
     )
 
 
 @cli.command()
+def status() -> None:
+    """Show detailed status of all locally tracked documents in SQLite."""
+    from .store import Store
+
+    settings = load_settings(require_api_key=False)
+    store = Store(settings)
+    try:
+        records = store.list_indexed_records()
+        s = store.stats()
+        last_sync = store.get_sync_meta("last_sync_completed_at")
+    finally:
+        store.close()
+
+    if not records:
+        click.echo("\nNo documents indexed yet. Run `gdrive-rag index` to begin.\n")
+        return
+
+    click.echo(f"\nIndexed Google Drive Documents ({len(records)} total):\n")
+    click.echo(f"  {'Document Name':<46} {'Last Updated':<18} {'Status':<10} {'Chunks':<6}")
+    click.echo("  " + "─" * 82)
+
+    for r in records:
+        name = (r.get("name") or "Untitled")[:44]
+        updated = _format_time_str(r.get("modified_time") or r.get("indexed_at"))
+        st = r.get("status", "indexed")
+        chunks = r.get("chunk_count", 0)
+        click.echo(f"  {name:<46} {updated:<18} {st:<10} {chunks:<6}")
+
+    click.echo("  " + "─" * 82)
+    click.echo(f"  Total Files Indexed : {s['files']}")
+    click.echo(f"  Total Chunks Stored : {s['chunks']}")
+    if last_sync:
+        click.echo(f"  Last Sync Completed : {_format_time_str(last_sync)}")
+    click.echo(f"  Data Directory      : {settings.data_dir}\n")
+
+
+@cli.command()
 def stats() -> None:
-    """Show how many files and chunks are currently indexed."""
+    """Show summary file and chunk counts currently indexed."""
     from .store import Store
 
     settings = load_settings(require_api_key=False)
     store = Store(settings)
     try:
         s = store.stats()
+        last_sync = store.get_sync_meta("last_sync_completed_at")
     finally:
         store.close()
-    click.echo(f"files : {s['files']}")
-    click.echo(f"chunks: {s['chunks']}")
-    click.echo(f"data  : {settings.data_dir}")
+    click.echo(f"files    : {s['files']}")
+    click.echo(f"chunks   : {s['chunks']}")
+    if last_sync:
+        click.echo(f"last_sync: {_format_time_str(last_sync)}")
+    click.echo(f"data     : {settings.data_dir}")
 
 
 def _locator_suffix(locator: dict) -> str:
@@ -317,4 +403,3 @@ def main() -> None:  # pragma: no cover - thin wrapper
 
 if __name__ == "__main__":  # pragma: no cover
     main()
-

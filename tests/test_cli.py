@@ -241,3 +241,70 @@ def test_login_missing_credentials(monkeypatch, tmp_path):
 
     assert result.exit_code != 0
     assert "not found" in result.output.lower()
+
+
+def test_ask_prints_answer_and_citations(monkeypatch, tmp_path):
+    import pytest
+
+    pytest.importorskip("chromadb")
+    from gdrive_rag import answer
+
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    monkeypatch.setenv("GDRIVE_RAG_DATA_DIR", str(tmp_path))
+
+    ans = answer.Answer(
+        query="what is a process",
+        text="A process is an instance of a program in execution [1].",
+        citations=[
+            answer.Citation(
+                index=1,
+                name="OS Notes",
+                locator={"type": "page", "value": "4"},
+                drive_url="https://drive.google.com/open?id=123",
+            )
+        ],
+        hits=[],
+    )
+
+    monkeypatch.setattr(
+        "gdrive_rag.answer.answer_query", lambda settings, store, query, k=6, client=None: ans
+    )
+
+    result = CliRunner().invoke(cli, ["ask", "what is a process"])
+
+    assert result.exit_code == 0, result.output
+    assert "instance of a program in execution [1]" in result.output
+    assert "Sources:" in result.output
+    assert "[1] OS Notes · p.4 — https://drive.google.com/open?id=123" in result.output
+
+
+def test_ask_missing_key(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+
+    result = CliRunner().invoke(cli, ["ask", "what is a process"])
+
+    assert result.exit_code != 0
+    assert "GEMINI_API_KEY" in result.output
+
+
+def test_ask_reports_error(monkeypatch, tmp_path):
+    import pytest
+
+    pytest.importorskip("chromadb")
+
+    monkeypatch.setattr("gdrive_rag.config.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    monkeypatch.setenv("GDRIVE_RAG_DATA_DIR", str(tmp_path))
+
+    def _boom(*a, **k):
+        raise RuntimeError("Gemini connection timed out")
+
+    monkeypatch.setattr("gdrive_rag.answer.answer_query", _boom)
+
+    result = CliRunner().invoke(cli, ["ask", "what is a process"])
+
+    assert result.exit_code != 0
+    assert "Ask failed" in result.output
+

@@ -44,10 +44,14 @@ def ping() -> None:
 
     client = genai.Client(api_key=settings.gemini_api_key)
     try:
-        resp = client.models.generate_content(
-            model=settings.chat_model,
-            contents="Reply with the single word: pong",
-        )
+        if hasattr(client, "chats") and hasattr(client.chats, "create"):
+            chat = client.chats.create(model=settings.chat_model)
+            resp = chat.send_message("Reply with the single word: pong")
+        else:
+            resp = client.models.generate_content(
+                model=settings.chat_model,
+                contents="Reply with the single word: pong",
+            )
     except genai_errors.APIError as e:
         raise click.ClickException(
             f"Gemini API call failed ({type(e).__name__}): {e}. "
@@ -273,9 +277,44 @@ def search_cmd(query: str, k: int) -> None:
         click.echo(f"   {_snippet(h.text)}\n")
 
 
+@cli.command("ask")
+@click.argument("query")
+@click.option("--k", default=6, show_default=True, help="Number of retrieved chunks to ground on.")
+def ask_cmd(query: str, k: int) -> None:
+    """Ask a question over your indexed Google Drive (synthesized answer with citations)."""
+    from .answer import answer_query
+    from .store import Store
+
+    try:
+        settings = load_settings()  # API key required — embeddings + generation hit Gemini
+    except ConfigError as e:
+        raise click.ClickException(str(e))
+
+    store = Store(settings)
+    try:
+        ans = answer_query(settings, store, query, k=k)
+    except Exception as e:
+        raise click.ClickException(
+            f"Ask failed: {e}\n"
+            "If you're behind an HTTP proxy, set https_proxy/http_proxy (e.g. in .env)."
+        )
+    finally:
+        store.close()
+
+    click.echo(f"\n{ans.text}\n")
+    if ans.citations:
+        click.echo("Sources:")
+        for c in ans.citations:
+            loc = _locator_suffix(c.locator)
+            url_part = f" — {c.drive_url}" if c.drive_url else ""
+            click.echo(f"  [{c.index}] {c.name}{loc}{url_part}")
+        click.echo()
+
+
 def main() -> None:  # pragma: no cover - thin wrapper
     cli()
 
 
 if __name__ == "__main__":  # pragma: no cover
     main()
+

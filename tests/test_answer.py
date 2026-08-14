@@ -204,3 +204,23 @@ def test_answer_query_integration(monkeypatch):
     assert ans.text == "Synthesized answer [1]."
     assert len(ans.citations) == 1
     assert ans.citations[0].name == "Guide"
+
+
+def test_generate_answer_suppresses_citations_when_not_found():
+    client = _FakeClientWithChats(
+        "I could not find information to answer this question in your indexed Google Drive documents."
+    )
+    hits = [
+        SearchHit(
+            score=0.9,
+            name="Irrelevant Doc",
+            locator={"type": "heading", "value": "Intro"},
+            drive_url="https://drive.google.com/open?id=1",
+            text="Irrelevant Doc — Intro\nSomething else entirely.",
+            chunk_index=0,
+        )
+    ]
+    ans = answer.generate_answer(_Settings(), "What is the secret recipe?", hits, client=client)
+    assert "I could not find information" in ans.text
+    assert ans.citations == []
+

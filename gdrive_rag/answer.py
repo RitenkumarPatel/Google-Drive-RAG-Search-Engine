@@ -118,6 +118,10 @@ def generate_answer(
         raise RuntimeError(f"Gemini generation failed ({type(e).__name__}): {e}") from e
 
     answer_text = (resp.text or "").strip()
+    not_found_phrase = "I could not find information to answer this question in your indexed Google Drive documents."
+    if not_found_phrase.lower() in answer_text.lower():
+        citations = []
+
     return Answer(
         query=query,
         text=answer_text,
